@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCR de imágenes</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <h1>Extraer texto de una imagen</h1>
+
+  <p>
+    <label>Galería: <input type="file" id="gallery" accept="image/*"></label>
+  </p>
+
+  <p>
+    <button type="button" id="btnCamera">Abrir cámara</button>
+    <button type="button" id="btnShot" hidden>Tomar foto</button>
+    <button type="button" id="btnClose" hidden>Cerrar cámara</button>
+    <label id="fallbackLabel" hidden>
+      Cámara del dispositivo: <input type="file" id="fallback" accept="image/*" capture="environment">
+    </label>
+  </p>
+
+  <video id="video" autoplay playsinline hidden style="max-width:100%"></video>
+
+  <p>
+    <img id="preview" alt="Vista previa" hidden style="max-width:100%; max-height:300px">
+  </p>
+
+  <p>
+    <label>Idioma:
+      <select id="lang">
+        <option value="spa+eng">Español + Inglés</option>
+        <option value="spa">Español</option>
+        <option value="eng">Inglés</option>
+      </select>
+    </label>
+    <label>Tipo de texto:
+      <select id="psm">
+        <option value="3">Automático (columnas, páginas)</option>
+        <option value="6">Un solo bloque</option>
+        <option value="4">Una columna de tamaños variables</option>
+        <option value="11">Texto suelto (carteles, etiquetas)</option>
+      </select>
+    </label>
+    <button type="button" id="btnOcr" disabled>Extraer texto</button>
+  </p>
+
+  <p id="status"></p>
+
+  <textarea id="output" rows="18" style="width:100%; font-family:monospace; white-space:pre" placeholder="El texto extraído aparece aquí"></textarea>
+  <p>
+    <button type="button" id="btnCopy">Copiar texto</button>
+    <button type="button" id="btnClear">Limpiar</button>
+  </p>
+
+  <canvas id="canvas" hidden></canvas>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const video = $("video"), canvas = $("canvas"), preview = $("preview");
+    let currentBlob = null, stream = null;
+
+    function setImage(blob) {
+      currentBlob = blob;
+      if (preview.src) URL.revokeObjectURL(preview.src);
+      preview.src = URL.createObjectURL(blob);
+      preview.hidden = false;
+      $("btnOcr").disabled = false;
+      $("status").textContent = "";
+    }
+
+    function stopCamera() {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      video.hidden = true;
+      $("btnShot").hidden = true;
+      $("btnClose").hidden = true;
+      $("btnCamera").hidden = false;
+    }
+
+    $("gallery").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      if (f) { stopCamera(); setImage(f); }
+    });
+
+    $("fallback").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      if (f) setImage(f);
+    });
+
+    $("btnCamera").addEventListener("click", async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        $("status").textContent = "No se puede abrir la cámara en vivo. Usa la opción de cámara del dispositivo.";
+        $("fallbackLabel").hidden = false;
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        video.hidden = false;
+        $("btnShot").hidden = false;
+        $("btnClose").hidden = false;
+        $("btnCamera").hidden = true;
+        $("status").textContent = "";
+      } catch (err) {
+        $("status").textContent = "No se pudo abrir la cámara: " + err.message;
+        $("fallbackLabel").hidden = false;
+      }
+    });
+
+    $("btnShot").addEventListener("click", () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d").drawImage(video, 0, 0);
+      canvas.toBlob((blob) => {
+        setImage(blob);
+        stopCamera();
+      }, "image/jpeg", 0.95);
+    });
+
+    $("btnClose").addEventListener("click", stopCamera);
+
+    // Preprocesado: corrige orientación EXIF, amplía imágenes chicas,
+    // pasa a gris y estira el contraste
+    async function preprocess(blob) {
+      const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
+      let scale = 1;
+      const maxSide = Math.max(bmp.width, bmp.height);
+      if (maxSide < 1500) scale = 1500 / maxSide;
+      const c = document.createElement("canvas");
+      c.width = Math.round(bmp.width * scale);
+      c.height = Math.round(bmp.height * scale);
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(bmp, 0, 0, c.width, c.height);
+
+      const img = ctx.getImageData(0, 0, c.width, c.height);
+      const d = img.data;
+      let min = 255, max = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        d[i] = d[i + 1] = d[i + 2] = g;
+        if (g < min) min = g;
+        if (g > max) max = g;
+      }
+      const range = Math.max(max - min, 1);
+      for (let i = 0; i < d.length; i += 4) {
+        const v = ((d[i] - min) * 255) / range;
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx.putImageData(img, 0, 0);
+      return c;
+    }
+
+    function cleanText(text) {
+      const lines = text.split("\n").map((l) => l.trimEnd());
+      return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    $("btnOcr").addEventListener("click", async () => {
+      if (!currentBlob) return;
+      $("btnOcr").disabled = true;
+      $("status").textContent = "Preparando imagen...";
+      let worker;
+      try {
+        const input = await preprocess(currentBlob);
+        worker = await Tesseract.createWorker($("lang").value, 1, {
+          logger: (m) => {
+            if (m.status === "recognizing text") {
+              $("status").textContent = "Leyendo texto: " + Math.round(m.progress * 100) + "%";
+            } else {
+              $("status").textContent = "Cargando motor y idioma...";
+            }
+          },
+        });
+        await worker.setParameters({
+          tessedit_pageseg_mode: $("psm").value,
+          preserve_interword_spaces: "1",
+        });
+        const { data } = await worker.recognize(input);
+        const text = cleanText(data.text);
+        $("output").value = text;
+        $("status").textContent = text ? "Listo." : "No se detectó texto.";
+      } catch (err) {
+        $("status").textContent = "Error: " + err.message;
+      } finally {
+        if (worker) await worker.terminate();
+        $("btnOcr").disabled = false;
+      }
+    });
+
+    $("btnCopy").addEventListener("click", async () => {
+      await navigator.clipboard.writeText($("output").value);
+      $("status").textContent = "Texto copiado.";
+    });
+
+    $("btnClear").addEventListener("click", () => {
+      $("output").value = "";
+      $("status").textContent = "";
+    });
+  </script>
+</body>
+</html>
