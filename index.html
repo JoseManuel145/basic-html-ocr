@@ -8,6 +8,7 @@
 </head>
 <body>
   <h1>Extraer texto de una imagen</h1>
+  <p>Puedes seleccionar una imagen, usar la cámara o pegar una captura con <strong>Ctrl+V</strong>.</p>
 
   <p>
     <label>Galería: <input type="file" id="gallery" accept="image/*"></label>
@@ -88,6 +89,29 @@
     $("fallback").addEventListener("change", (e) => {
       const f = e.target.files[0];
       if (f) setImage(f);
+    });
+
+    function getClipboardImage(clipboardData) {
+      if (!clipboardData) return null;
+      const items = clipboardData.items || [];
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          return item.getAsFile();
+        }
+      }
+      const files = clipboardData.files || [];
+      for (const file of files) {
+        if (file.type && file.type.startsWith("image/")) return file;
+      }
+      return null;
+    }
+
+    document.addEventListener("paste", (e) => {
+      const image = getClipboardImage(e.clipboardData);
+      if (!image) return;
+      e.preventDefault();
+      stopCamera();
+      setImage(image);
     });
 
     $("btnCamera").addEventListener("click", async () => {
